@@ -1,3 +1,4 @@
+import json
 import os
 import logging
 import datetime
@@ -24,7 +25,7 @@ def set_logger(args, dataset_name, method_name, task="longbench_v1"):
         datestr = datetime.datetime.now().strftime('%y%m%d%H%M')
         result_dir = task_path / method_name
         result_dir.mkdir(exist_ok=True, parents=True)
-        output_file = f"{args.datadir.replace('_e','')}_"+\
+        output_file = f"{args.datadir}_"+\
             (f"_fraction{args.fraction}" if args.fraction < 1.0 else "")+\
             f"{datestr}"
         save_filename = result_dir / f"{output_file}.jsonl"
@@ -54,3 +55,9 @@ def reset_logger():
             handler.close()
         logger.setLevel(logging.NOTSET)
         logger.propagate = True
+
+
+def dump_jsonl(data, fname):
+    with open(fname, "w", encoding="utf8") as fout:
+        for line in data:
+            fout.write(json.dumps(line, ensure_ascii=False) + "\n")

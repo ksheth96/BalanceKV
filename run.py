@@ -1,5 +1,4 @@
 # modified from https://github.com/NVIDIA/kvpress/blob/main/evaluation/evaluate.py
-import json
 import time
 from typing import Any, Optional, Tuple, Dict
 import random
@@ -12,7 +11,7 @@ from kvpress.pipeline import KVPressTextGenerationPipeline
 from kvpress import BasePress, RandomPress, SnapKVPress, PyramidKVPress
 from balancekv_press import BalanceKVPress
 from original_snapkv_press import OriginalSnapKVPress
-from utils import set_logger, get_method_name, reset_logger
+from utils import set_logger, get_method_name, reset_logger, dump_jsonl
 
 from transformers import pipeline
 from transformers import AutoModelForCausalLM
@@ -40,9 +39,6 @@ DATASET_DICT = {
     "longbench-v2": "Xnhyacinth/LongBench-v2",
 }
 
-LONGBENCH = ['2wikimqa', '2wikimqa_e', 'gov_report', 'gov_report_e', 'hotpotqa', 'hotpotqa_e', 'lcc_e', 'multi_news', 'multi_news_e', 'multifieldqa_en', 'multifieldqa_en_e', 'passage_count_e', 'passage_retrieval_en_e', 'qasper', 'qasper_e', 'repobench-p_e', 'samsum_e', 'trec_e', 'triviaqa_e']
-
-
 SCORER_DICT = {
     "loogle": loogle_scorer,
     "ruler": ruler_scorer,
@@ -52,7 +48,6 @@ SCORER_DICT = {
     "longbench-e": longbench_scorer,
     "longbench-v2": longbenchv2_scorer,
 }
-
 
 PRESS_DICT = {
     "exact": RandomPress(),
@@ -154,13 +149,15 @@ def main():
         args.method = 'exact'
 
     method_name = get_method_name(args)
-    dataset_name = args.dataset + "-" + args.datadir.replace("_e", "")
+    dataset_name = args.dataset + "-" + args.datadir
     logger, save_filename = set_logger(args, dataset_name, method_name)
+    logger.info(f"save_filename: {save_filename}")
 
     for n_, v_ in args.__dict__.items():
         logger.info(f"{n_:<20} : {v_}")
 
-    df = load_dataset(DATASET_DICT[args.dataset], args.datadir, split="test").to_pandas()
+    subset_name = args.datadir + ("_e" if args.dataset == 'longbench-e' and args.datadir[:-2] != "_e" else "")
+    df = load_dataset(DATASET_DICT[args.dataset], subset_name, split="test").to_pandas()
     if args.fraction < 1.0:
         df = df.sample(frac=args.fraction, random_state=args.seed)
     df["predicted_answer"] = None
@@ -177,7 +174,7 @@ def main():
     press = PRESS_DICT[args.method]
     if args.method == 'exact':
         pass
-    elif args.method in ['snapkv', 'snapkv2']:
+    elif args.method in ['snapkv', 'snapkv2', 'pyramidkv']:
         press.compression_ratio = args.compression_ratio
         press.window_size = args.window_size
         press.kernel_size = args.kernel_size
@@ -197,6 +194,7 @@ def main():
     max_context_length = None
     max_new_tokens = None
     metric_values = []
+    preds = []
     cnt = 0
     n_data = len(df["context"])
     for context, df_ in df_context:
@@ -232,6 +230,7 @@ def main():
             cache_shapes.append(v_cache.shape)
         full_cache_numel = 2 * input_len * pipe.model.config.head_dim * pipe.model.config.num_key_value_heads * pipe.model.config.num_hidden_layers 
         full_cache_size = full_cache_numel * pipe.model.dtype.itemsize #/ 1024**3
+        bitpercoord = 8*cache_size/full_cache_numel
 
         if cnt == 0:
             cache_shape = list(set(cache_shapes))[0]
@@ -242,18 +241,21 @@ def main():
 
         if args.dataset in ["longbench-e", "longbench"]:
             metric_value = scorer(df.loc[df_.index])
-            metric_name = dataset2metric[args.datadir.replace("_e","")].__name__.replace("_score", "")
+            metric_name = dataset2metric[args.datadir].__name__.replace("_score", "")
         else:
             metric_ = scorer(df.loc[df_.index])
             metric_name = list(metric_[task_name].keys())[0]
             metric_value = metric_[task_name][metric_name]
         
         metric_values.append(metric_value)
+        preds.append({"id": cnt, "score": metric_value, "score_avg": np.mean(metric_values), "metric_name": metric_name, "task_name": task_name, "bpn": bitpercoord})
+        if not args.debug:
+            dump_jsonl(preds, str(save_filename))
 
         toc = time.time()
         logger.info(
             f"{cnt}/{n_data} (id: {df_.index.values[0]:>4}), {metric_name}: {metric_value:.2f} (avg: {np.mean(metric_values):.2f})"+\
-            f", task: {task_name}, slen: {input_len}, cache_size: {cache_size/2**30:.3f} GB ({full_cache_size/2**30:.3f} GB, {8*cache_size/full_cache_numel:.3f}-bits)"+\
+            f", task: {task_name}, slen: {input_len}, cache_size: {cache_size/2**30:.3f} GB ({full_cache_size/2**30:.3f} GB, {bitpercoord:.3f}-bits)"+\
             f", time: ({toc-tic:.2f} s, {toc-tic0:.2f} s)"
             # f", pred: {output['answers']}, ans: {df_['answer'].values[0]}"
         )
@@ -261,10 +263,7 @@ def main():
 
     # Calculate metrics
     metrics = scorer(df)
-    with open(str(save_filename).replace(".csv", ".json"), "w") as f:
-        json.dump(metrics, f)
-    # print(f"Average compression ratio: {df['compression_ratio'].mean():.2f}")
-    print(metrics)
+    logger.info(metrics)
 
     if not args.debug:
         reset_logger()
