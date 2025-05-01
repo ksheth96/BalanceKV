@@ -278,6 +278,14 @@ class BalanceKVPress(BasePress):
         if self.rng is None:
             self.rng = torch.Generator(device=keys.device)
             self.rng.manual_seed(self.seed)
+            
+        qq_selected = qq[:, :, -self.window_size:, :] #shape (1, 32, self.window_size, 128)
+
+        qq_selected = torch.mean(qq_selected, dim = -2, keepdim=True)
+
+        qq_selected = qq_selected.view(1, 8, 4, 1, 128)# Reshape to group dim=1 into 8 groups of 4
+        qq_selected = qq_selected.mean(dim=2) #shape (1, 8, 1, 128)
+
 
         k_compressed = keys[:, :, self.sink_size:-self.window_size] 
         v_compressed = values[:, :, self.sink_size:-self.window_size]
