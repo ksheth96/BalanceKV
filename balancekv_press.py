@@ -285,20 +285,17 @@ class BalanceKVPress(BasePress):
         #indices, weights = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, value=v_compressed)
 
         if module.layer_idx==1: #detect the needle in the second layer - first layer does not contain it
-            if kv_type in ['weightedbw', 'bw', 'balancedwalk']:
-                indices, weights, needle_mask = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
-            elif kv_type == 'uniform':
-                indices, weights, needle_mask = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
+            indices, weights, needle_mask = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
+            #elif kv_type == 'uniform':
+                #indices, weights, needle_mask = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
         elif module.layer_idx > 1:
-             if kv_type in ['weightedbw', 'bw', 'balancedwalk']:
-                indices, weights, _ = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, needle_mask = needle_mask, value=v_compressed, qquery = qq_selected)
-             elif kv_type == 'uniform':
-                indices, weights, _ = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, needle_mask = needle_mask, value=v_compressed, qquery = qq_selected)
+            indices, weights, _ = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, needle_mask = needle_mask, value=v_compressed, qquery = qq_selected)
+             #elif kv_type == 'uniform':
+               # indices, weights, _ = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, needle_mask = needle_mask, value=v_compressed, qquery = qq_selected)
         else:
-             if kv_type in ['weightedbw', 'bw', 'balancedwalk']:
-                indices, weights, _ = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
-             elif kv_type == 'uniform':
-                indices, weights, _ = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
+            indices, weights, _ = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
+             #elif kv_type == 'uniform':
+                #indices, weights, _ = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
                  
         indices = indices.unsqueeze(-1).expand(-1, -1, -1, module.head_dim)
 
