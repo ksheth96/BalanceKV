@@ -265,19 +265,19 @@ class BalanceKVPress(BasePress):
         hidden_states: torch.Tensor,
         keys: torch.Tensor,
         values: torch.Tensor,
-        attentions: torch.Tensor,
-        needle_mask = None, 
+        attentions: torch.Tensor, 
         kwargs: dict,
+        needle_mask = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
         if self.rng is None:
             self.rng = torch.Generator(device=keys.device)
             self.rng.manual_seed(self.seed)
-        d = key.shape[-1]
+        d = keys.shape[-1]
 
-        rot_mat = torch.randn(d, d,  generator=self.rng, device=self.device)
+        rot_mat = torch.randn(d, d,  generator=self.rng, device=keys.device)
         rot_mat = torch.linalg.qr(rot_mat)[0].unsqueeze(0).unsqueeze(0)
-        rot_mat = rot_mat.to(device=model.device, dtype=kk.dtype)
+        rot_mat = rot_mat.to(device=keys.device, dtype=keys.dtype)
         keys_rot = torch.matmul(keys, rot_mat) #preserves all the inner products
 
         k_compressed_rot = keys_rot[:, :, self.sink_size:-self.window_size]
@@ -287,15 +287,15 @@ class BalanceKVPress(BasePress):
         #indices, weights = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, value=v_compressed)
 
         if module.layer_idx==1: #detect the needle in the second layer - first layer does not contain it
-            indices, weights, needle_mask = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
+            indices, weights, needle_mask = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed)
             #elif kv_type == 'uniform':
                 #indices, weights, needle_mask = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
         elif module.layer_idx > 1:
-            indices, weights, _ = balanced_walk(k_compressed_rot, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, needle_mask = needle_mask, value=v_compressed, qquery = qq_selected)
+            indices, weights, _ = balanced_walk(k_compressed_rot, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, needle_mask = needle_mask, value=v_compressed)
              #elif kv_type == 'uniform':
                # indices, weights, _ = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, needle_mask = needle_mask, value=v_compressed, qquery = qq_selected)
         else:
-            indices, weights, _ = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
+            indices, weights, _ = balanced_walk(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed)
              #elif kv_type == 'uniform':
                 #indices, weights, _ = balanced_walk(k_compressed, self.rng, 0.0, self.temp, self.beta, self.itrs, self.block_size, layer = module.layer_idx, value=v_compressed, qquery = qq_selected)
                  
