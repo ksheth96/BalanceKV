@@ -60,7 +60,13 @@ def llamaattention_forward(
         n_repeat = self.config.num_attention_heads // self.config.num_key_value_heads
         qk = query_states @ repeat_kv(key_states, n_repeat).transpose(-1,-2) / self.config.head_dim**0.5
         bias = torch.zeros_like(qk)
-        bias[:, :, :, sink_size:sink_size+compress_size] = math.log(2**itrs)
+
+        if hasattr(past_key_value, "log_weights"):
+            needle_used = past_key_value.log_weights
+            needle_used = needle_used.repeat_interleave(n_repeat, dim=1).transpose(-1, -2)
+            bias[:, :, :, sink_size:sink_size+compress_size] = needle_used
+        else:
+            bias[:, :, :, sink_size:sink_size+compress_size] = math.log(2**itrs)
         attn_output = ((qk + bias).softmax(dim=-1) @ repeat_kv(value_states, n_repeat)).transpose(1,2)
         attn_weights = None
 
@@ -180,8 +186,8 @@ class BalanceKVPress(BasePress):
     gamma: float = 4.0
     beta: float = 0.0
     block_size: int = 128
-    window_size: int = 64
-    sink_size: int = 16
+    window_size: int = 32
+    sink_size: int = 32
     seed: int = 1234
     temp: float = 1.0
     rng : Optional[torch.Generator] = None
@@ -240,3 +246,271 @@ class BalanceKVPress(BasePress):
         finally:
             for forward_hook in hooks:
                 forward_hook.remove()
+
+
+def balanced_walk_v3(
+    key,
+    rng,
+    gamma_,
+    temp_,
+    beta_,
+    itrs,
+    block_size,
+    value=None,
+    needle_mask=None,
+    layer=None,
+    sort_idx=None,
+    query=None,
+    qquery=None,
+):
+    b, h, n, d = key.shape
+    if type(gamma_) != list:
+        gamma_ = [gamma_] * itrs
+    const_denom = 0.025  # change this to 0.00 to change the kernel back
+    needle_mask_bw = None
+
+    if type(block_size) != list:
+        block_size = [block_size] * itrs
+    weight_idx = None
+    for t in range(itrs):  # write range(1, itrs) to check everything still works
+        if needle_mask_bw is not None:
+            needle_mask_bw = torch.nn.functional.pad(needle_mask_bw, (0, math.ceil(n / block_size[t]) * block_size[t] - needle_mask_bw.shape[-1],),).view(b, h, -1, block_size[t])
+        if sort_idx is not None:
+            key_sorted, value_sorted = indexing(key, sort_idx, block_size[t], value)
+            key_sorted = key_sorted.view(b, h, -1, block_size[t], d)
+            if value is not None:
+                weight_idx_padded = torch.nn.functional.pad(
+                    weight_idx,
+                    (
+                        0,
+                        math.ceil(n / block_size[t]) * block_size[t]
+                        - weight_idx.shape[-1],
+                    ),
+                )
+                value_sorted = value_sorted * weight_idx_padded.unsqueeze(-1)
+                value_sorted = value_sorted.view(b, h, -1, block_size[t], d)
+        else:
+            new_n = math.ceil(n / block_size[t]) * block_size[t]
+            key_sorted = torch.nn.functional.pad(key, (0, 0, 0, new_n - n), mode="constant", value=0.0).view(b, h, -1, block_size[t], d)
+            value_sorted = None
+            if value is not None:
+                value_sorted = torch.nn.functional.pad(
+                    value, (0, 0, 0, new_n - n), mode="constant", value=0.0
+                ).view(b, h, -1, block_size[t], d)
+
+        new_n = math.ceil(n / block_size[t]) * block_size[t]
+        normal_keys = key_sorted - torch.mean(key_sorted, dim=-2, keepdim=True)
+        normal_keys = normal_keys.view(b, h, new_n, d)
+        if qquery is not None:
+            normal_keys = qquery + normal_keys
+        normal_keys = normal_keys.view(b, h, -1, block_size[t], d)
+
+        if query is not None:
+            query_key_correlation = torch.softmax(
+                torch.einsum("b h n d,b h s m d->b h s n m", query[:, ::4, :, :], normal_keys), dim=-1,
+            ).mean(-2, keepdim=True)
+            kernel_ = query_key_correlation * query_key_correlation.transpose(-1, -2)
+        else:
+            kernel_ = torch.exp(
+                temp_
+                * torch.einsum("...nd,...sd->...ns", normal_keys, normal_keys)
+                / math.sqrt(d)
+                - beta_
+            )
+        if value is not None:
+
+            kernel_ *= (
+                1e-8
+                + torch.einsum("...nd,...sd->...ns", value_sorted, value_sorted)
+                + const_denom
+            )
+        key_correlation = 1e-8 + torch.einsum("...nd,...sd->...ns", key_sorted, key_sorted)
+        key_inner_prods = key_correlation.sum(dim=-1)
+
+        if layer == 1 and t == 0:
+            threshold = 0.0
+            key_correlation = 1e-8 + torch.einsum("...nd,...sd->...ns", key_sorted, key_sorted)
+            key_correlation_sum = key_correlation.sum(dim=-1) / key_correlation.shape[-1]
+            needle_mask = key_correlation_sum > threshold
+            needle_mask = needle_mask.view(b, h, -1)[:, :, :n]
+            if (n == 0):  # simply to deal with n==0, does not matter what we return, as long as the sha
+                sort_idx = needle_mask[:, :, :0]
+                weigth_idx = needle_mask[:, :, :0]
+                needle_mask = needle_mask[:, :, :0]
+                break
+            needle_mask = needle_mask.to(torch.int32)
+            needle_mask_padded = torch.nn.functional.pad(needle_mask, (25, 25), mode="constant", value=1)
+            unfolded = needle_mask_padded.unfold(-1, 51, 1)
+            result = unfolded.sum(dim=-1)
+            new_needle_mask = result > 50
+            needle_mask = new_needle_mask * needle_mask
+            zero_counts = (needle_mask == 0).sum(dim=-1)  # Shape: (b, h, w)
+            needle_mask = torch.nn.functional.pad(
+                needle_mask,
+                (
+                    0,
+                    math.ceil(n / block_size[t]) * block_size[t]
+                    - needle_mask.shape[-1],
+                ),
+            ).view(b, h, -1, block_size[t])
+            # Count occurrences of 0 along the last dimension
+
+        signs = torch.zeros(kernel_.shape[:4], dtype=torch.float32, device=kernel_.device)
+        signs[:, :, :, 0] = 1
+        rand_tensor = torch.rand(signs.shape, generator=rng, device=key.device)
+
+        if needle_mask == None:
+            needle_mask = torch.ones_like(signs)
+        if needle_mask_bw == None:
+            needle_mask_bw = needle_mask
+
+        for i in range(1, kernel_.shape[3]):
+            partial_inner_prod = (kernel_[:, :, :, i, :] * signs * needle_mask_bw).sum(dim=-1)
+            prev_sign = signs[:, :, :, i - 1]
+            samp_prb = 0.5 - gamma_[t] * partial_inner_prod  # + 0.1*prev_sign
+            signs[:, :, :, i] = 2 * (rand_tensor[:, :, :, i] < samp_prb) - 1
+
+        signs = signs.view(b, h, -1)[:, :, :n]
+        needle_mask_bw = needle_mask_bw.view(b, h, -1)[:, :, :n]
+
+        signs = signs * needle_mask_bw
+
+        if signs.shape[-1] == 0:  # simply to deal with n==0
+            sort_idx = signs[:, :, :0]
+            weigth_idx = signs[:, :, :0]
+            break
+        if torch.all(needle_mask_bw):
+            cumsum_neg = (signs == -1).cumsum(dim=-1)
+            cumsum_pos = (signs == 1).cumsum(dim=-1)
+
+            c_neg = torch.argmax((cumsum_neg == n // 2).to(torch.int64), dim=-1)  # Shape (b, h)
+            c_pos = torch.argmax((cumsum_pos == n // 2).to(torch.int64), dim=-1)  # Shape (b, h)
+            c = torch.maximum(c_neg, c_pos)
+
+            # Ensure `c` is on the same device as `signs`
+            c = c.to(signs.device)
+
+            weight = signs
+
+            # Create an index tensor `[0, 1, ..., n-1]` for comparison
+            indices = torch.arange(signs.shape[2], device=signs.device).view(1, 1, -1)
+
+            # 1Set all values after `c[a, b]` to `1`
+            mask_after_c = indices > c.unsqueeze(-1)  # True for all d > c[a, b]
+
+            weight[mask_after_c] = torch.abs(weight[mask_after_c])  # Set those indices to `1`
+
+            # 2Identify where `signs[a, b, c[a, b]] == 1`
+            mask_flip_needed = (signs.gather(2, c.unsqueeze(-1)) == 1).squeeze(-1)
+
+            # Create mask for all indices `<= c[a, b]`
+            mask_before_c = indices <= c.unsqueeze(-1)
+            weight[mask_before_c] *= 2
+
+            # Apply flipping only when `signs[a, b, c] == 1`
+            flip_mask = mask_before_c & mask_flip_needed.unsqueeze(-1)
+            weight[flip_mask] *= -1  # Flip selected values
+
+            weight_argsort = torch.argsort(-weight, dim=-1, stable=True)
+        else:
+            weight = signs
+            # flipping_mask = (signs == 1).sum(dim=-1) > (signs == -1).sum(dim=-1)
+            # weight[flipping_mask] *= -1
+            weight_zeros = weight == 0
+            weight[weight_zeros] += 2
+            weight += 1
+            weight_argsort = torch.argsort(-weight, dim=-1, stable=True)
+            weight[weight_zeros] = 1
+
+        n = n // 2
+        if sort_idx is None:
+            sort_idx = weight_argsort[:, :, :n]
+            weight_idx = weight.gather(-1, weight_argsort[:, :, :n])
+            needle_mask_bw = needle_mask_bw.gather(-1, weight_argsort[:, :, :n])
+        else:
+            sort_idx = sort_idx.gather(2, weight_argsort[:, :, :n])
+            weigth_idx_1 = weight.gather(-1, weight_argsort[:, :, :n])
+            weight_idx = weight_idx.gather(-1, weight_argsort[:, :, :n])
+            weight_idx = weight_idx * weigth_idx_1
+            needle_mask_bw = needle_mask_bw.gather(-1, weight_argsort[:, :, :n])
+
+    return sort_idx, weight_idx, needle_mask
+
+
+@dataclass
+class BalanceKV3Press(BalanceKVPress):
+
+    def compress(
+        self,
+        module: nn.Module,
+        hidden_states: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        attentions: torch.Tensor,
+        kwargs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+
+        if self.rng is None:
+            self.rng = torch.Generator(device=keys.device)
+            self.rng.manual_seed(self.seed)
+
+        layer_idx = module.layer_idx
+
+        # Get last window_size queries
+        if hasattr(module, "q_proj"):
+            qq = module.q_proj(hidden_states)
+        elif hasattr(module, "qkv_proj"):
+            qkv = module.qkv_proj(hidden_states[:, -window_size:])
+            qq = qkv[..., : num_heads * head_dim]
+        else:
+            raise NotImplementedError(f"SnapKV not yet implemented for {module.__class__}.")
+
+        bsz = hidden_states.shape[0]
+        num_heads = module.config.num_attention_heads
+        head_dim = module.config.hidden_size // num_heads
+        qq = qq.view(bsz, -1, num_heads, head_dim).transpose(1, 2)
+
+        qq_selected = qq[:, :, -self.window_size:, :] #shape (1, 32, 32, 128)
+        qq_selected = torch.mean(qq_selected, dim = -2, keepdim=True)
+
+        num_key_value_heads = module.config.num_key_value_heads
+        qq_selected = qq_selected.view(bsz, num_key_value_heads, -1, 1, head_dim) # Reshape to group dim=1 into 8 groups of 4
+        qq_selected = qq_selected.mean(dim=2) #shape (1, 8, 1, 128)
+
+        k_compressed = keys[:, :, self.sink_size:-self.window_size] 
+        v_compressed = values[:, :, self.sink_size:-self.window_size]
+
+        if layer_idx == 1: # detect the needle in the first layer
+            indices, weights, needle_mask = balanced_walk_v3(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer=layer_idx, value=v_compressed, qquery=qq_selected)
+            kwargs['past_key_value'].needle_mask = needle_mask
+        elif layer_idx > 1:
+            needle_mask = kwargs['past_key_value'].needle_mask
+            indices, weights, _ = balanced_walk_v3(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer=layer_idx, needle_mask=needle_mask, value=v_compressed, qquery=qq_selected)
+        else: # if layer_idx == 0, we don't need to detect the needle
+            indices, weights, _ = balanced_walk_v3(k_compressed, self.rng, self.gamma, self.temp, self.beta, self.itrs, self.block_size, layer=layer_idx, value=v_compressed, qquery=qq_selected)
+
+        # Prune keys and values
+        k_bw = k_compressed.gather(dim=2, index=indices.unsqueeze(-1).expand(-1,-1,-1,keys.shape[-1]))
+        v_bw = v_compressed.gather(dim=2, index=indices.unsqueeze(-1).expand(-1,-1,-1,values.shape[-1]))
+
+        if weights != None: # simply to deal with n==0
+            weights_zeros = weights > 0
+            weights_zeros = weights_zeros.unsqueeze(-1)
+            v_bw_num = v_bw * weights_zeros
+            v_bw_num = v_bw_num.to(hidden_states.dtype)
+        else:
+            v_bw_num = v_bw
+        weights = weights.unsqueeze(-1)
+        log_weights = torch.where(weights > 0, torch.log(weights), torch.full_like(weights, -1e9))
+
+        keys = torch.cat((keys[:,:,:self.sink_size], k_bw, keys[:, :, -self.window_size:]), dim=2)
+        values = torch.cat((values[:,:,:self.sink_size], v_bw, values[:, :, -self.window_size:]), dim=2)
+
+        kwargs['past_key_value'].itrs = self.itrs
+        kwargs['past_key_value'].compress_size = k_bw.shape[2]
+        kwargs['past_key_value'].input_len = hidden_states.shape[1]
+        kwargs['past_key_value'].sink_size = self.sink_size
+        kwargs['past_key_value'].size = keys.shape
+        kwargs['past_key_value'].log_weights = log_weights
+        
+        return keys, values

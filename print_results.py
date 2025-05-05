@@ -135,12 +135,23 @@ def print_ruler(model_name = "Llama-3.1-8B-Instruct", result_path="./results", m
             if date < int(fn.split("_")[-1].split(".")[0]):
                 date = int(fn.split("_")[-1].split(".")[0])
                 fn_ = fn
+
+        res = []
         for line in open(os.path.join(base_path, fn_), "r"):
-            res = json.loads(line)
+            res.append(json.loads(line))
+        if len(res) == 1:
+            res = res[0]
+            task_types = res.keys()
+        else:
+            task_types = sorted(list(set([r['task_name'] for r in res])))
+            res_ = {tn: [] for tn in task_types}
+            for r in res:
+                res_[r['task_name']].append(r["score"])
+            res = {tn: np.mean(vals) for tn, vals in res_.items()}
         
         if not print_first_line:
             print("           ", end='|')
-            for tn in res.keys():
+            for tn in task_types:
                 if len(tn) < 8:
                     print(f"{tn:>8}", end=' ')
                 else:
@@ -151,22 +162,26 @@ def print_ruler(model_name = "Llama-3.1-8B-Instruct", result_path="./results", m
         print(f"{method_name_short:<10} ", end='|')
         values = []
         for tn, val in res.items():
-            vv = list(val.values())[0]
+            if type(val) in [float, np.float32, np.float64]:
+                vv = val
+            else:
+                vv = list(val.values())[0]
             if len(tn) < 8:
                 print(f" {vv:>7.2f} ", end='')
             else:
                 print(f" {vv:>15.2f} ", end='')
             values.append(vv)
         print(f" | {np.mean(values):>7.2f} ")
-    print("="*160)
+    print("="*200)
     
         
 def main():
     print("dataset: ruler")
-    method_names = ["exact", 'snapkv', 'snapkv2', 'balancekv', 'pyramidkv']
-    # print_ruler(result_path="./results", method_names=method_names, datadir='4096')
+    # method_names = ["exact", 'snapkv', 'snapkv2', 'balancekv', 'balancekv3', 'pyramidkv']
+    method_names = ["exact", "snapkv", "snapkv2", "balancekv3"]
+    print_ruler(result_path="./results", method_names=method_names, datadir='4096')
     # print_ruler(result_path="./results", method_names=method_names, datadir='8192')
-    print_longbench(result_path="./results", method_names=method_names)
+    # print_longbench(result_path="./results", method_names=method_names)
     
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ Implementations are based on on https://github.com/NVIDIA/kvpress.git which supp
 
 To run LongBench experiment, 
 ```python
-python run.py --method balancekv --dataset longbench-e --datadir qasper_e
+python run.py --method balancekv --dataset longbench-e --datadir qasper
 ```
 
 To run RULER experiment, 

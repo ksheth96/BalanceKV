@@ -9,7 +9,7 @@ from datasets import load_dataset
 
 from kvpress.pipeline import KVPressTextGenerationPipeline
 from kvpress import BasePress, RandomPress, SnapKVPress, PyramidKVPress
-from balancekv_press import BalanceKVPress
+from balancekv_press import BalanceKVPress, BalanceKV3Press
 from original_snapkv_press import OriginalSnapKVPress
 from utils import set_logger, get_method_name, reset_logger, dump_jsonl
 
@@ -55,6 +55,7 @@ PRESS_DICT = {
     "snapkv": OriginalSnapKVPress(),
     "snapkv2": SnapKVPress(),
     "balancekv": BalanceKVPress(),
+    "balancekv3": BalanceKV3Press(),
     "pyramidkv": PyramidKVPress(),
 }
 
@@ -121,13 +122,15 @@ def seed_everything(seed):
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=42)
+    # parser.add_argument('--model', type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument('--model', type=str, default="meta-llama/Llama-3.1-8B-Instruct")
     parser.add_argument('--dataset', type=str, default='longbench-e')
-    parser.add_argument('--datadir', type=str, default='qasper_e')
+    parser.add_argument('--datadir', type=str, default='qasper')
     parser.add_argument('--method', type=str, default="snapkv")
     parser.add_argument('--prefix', type=str, default='')
     parser.add_argument('--fraction', type=float, default=1.0)
-    parser.add_argument('--debug', action='store_true', default=False)
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--print_pred', action='store_true')
 
     parser.add_argument("--compression_ratio", type=float, default=0.0)
     parser.add_argument("--window_size", type=int, default=32, help="for SnapKV,PyramidKV")
@@ -145,7 +148,7 @@ def main():
     args = parse_args()
     seed_everything(args.seed)
 
-    if args.compression_ratio == 0.0 and args.method != 'balancekv':
+    if args.compression_ratio == 0.0 and args.method not in ['balancekv', 'balancekv3']:
         args.method = 'exact'
 
     method_name = get_method_name(args)
@@ -178,7 +181,7 @@ def main():
         press.compression_ratio = args.compression_ratio
         press.window_size = args.window_size
         press.kernel_size = args.kernel_size
-    elif args.method == 'balancekv':
+    elif args.method in ['balancekv', 'balancekv3']:
         press.window_size = args.window_size
         press.sink_size = args.window_size
         press.block_size = args.block_size
@@ -228,7 +231,10 @@ def main():
         for v_cache in cache.value_cache:
             cache_size += v_cache.numel() * v_cache.element_size()
             cache_shapes.append(v_cache.shape)
-        full_cache_numel = 2 * input_len * pipe.model.config.head_dim * pipe.model.config.num_key_value_heads * pipe.model.config.num_hidden_layers 
+        try:
+            full_cache_numel = 2 * input_len * pipe.model.config.head_dim * pipe.model.config.num_key_value_heads * pipe.model.config.num_hidden_layers 
+        except:
+            full_cache_numel = 2 * input_len * 128 * pipe.model.config.num_key_value_heads * pipe.model.config.num_hidden_layers 
         full_cache_size = full_cache_numel * pipe.model.dtype.itemsize #/ 1024**3
         bitpercoord = 8*cache_size/full_cache_numel
 
@@ -251,6 +257,18 @@ def main():
         preds.append({"id": cnt, "score": metric_value, "score_avg": np.mean(metric_values), "metric_name": metric_name, "task_name": task_name, "bpn": bitpercoord})
         if not args.debug:
             dump_jsonl(preds, str(save_filename))
+
+        if args.print_pred:
+            if "answers" in df_:
+                logger.info(f"pred: {output['answers']}, ans: {df_['answers'].values[0]}")
+            elif "answer" in df_:
+                logger.info(f"pred: {output['answers']}, ans: {df_['answer'].values}")
+
+            # row = [df_["_id"].values[0], df_['answers'].values[0][0], output['answers'][0], metric_value/100]
+            # import csv
+            # with open(f'res_{args.datadir}_kvpress.csv', 'a', newline='') as file:
+            #     writer = csv.writer(file)
+            #     writer.writerow(row)
 
         toc = time.time()
         logger.info(
