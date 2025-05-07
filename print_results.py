@@ -177,11 +177,13 @@ def print_ruler(model_name = "Llama-3.1-8B-Instruct", result_path="./results", m
         
 def main():
     print("dataset: ruler")
-    # method_names = ["exact", 'snapkv', 'snapkv2', 'balancekv', 'balancekv3', 'pyramidkv']
-    method_names = ["exact", "snapkv", "snapkv2", "balancekv3"]
-    print_ruler(result_path="./results", method_names=method_names, datadir='4096')
+    method_names = ["exact", 'snapkv', 'snapkv2', 'balancekv3', 'pyramidkv']
+    # method_names = ["exact", "snapkv", "snapkv2", "pyramidkv", "balancekv3"]
+    # method_names = ["balancekv3"]
+    # print_ruler(result_path="./results", method_names=method_names, datadir='4096')
     # print_ruler(result_path="./results", method_names=method_names, datadir='8192')
-    # print_longbench(result_path="./results", method_names=method_names)
+    # print_ruler(result_path="./results", method_names=method_names, datadir='16384')
+    print_longbench(result_path="./results", model_name='Qwen2.5-7B-Instruct', method_names=method_names)
     
 
 if __name__ == "__main__":

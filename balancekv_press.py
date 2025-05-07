@@ -260,7 +260,7 @@ class BalanceKVPress(BasePress):
     beta: float = 0.0
     block_size: int = 128
     window_size: int = 32
-    sink_size: int = 32
+    sink_size: int = 0
     seed: int = 1234
     temp: float = 1.0
     rng : Optional[torch.Generator] = None

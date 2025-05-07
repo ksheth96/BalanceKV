@@ -8,7 +8,7 @@ METHOD=$1
 # for METHOD in "${METHODS[@]}"; do
 for dataset in ${LONGBENCH_V1_E[@]}; do
     # echo "Running for dataset: ${dataset}"
-    cmd="python run.py --method $METHOD --dataset longbench-e --datadir $dataset --compression_ratio 0.75"
+    cmd="python run.py --method $METHOD --dataset longbench-e --datadir $dataset --compression_ratio 0.75 --model Qwen/Qwen2.5-7B-Instruct"
     echo $cmd
     eval $cmd
 done

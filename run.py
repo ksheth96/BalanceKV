@@ -8,7 +8,7 @@ import torch
 from datasets import load_dataset
 
 from kvpress.pipeline import KVPressTextGenerationPipeline
-from kvpress import BasePress, RandomPress, SnapKVPress, PyramidKVPress
+from kvpress import BasePress, RandomPress, SnapKVPress, PyramidKVPress, StreamingLLMPress
 from balancekv_press import BalanceKVPress, BalanceKV3Press
 from original_snapkv_press import OriginalSnapKVPress
 from utils import set_logger, get_method_name, reset_logger, dump_jsonl
@@ -57,6 +57,7 @@ PRESS_DICT = {
     "balancekv": BalanceKVPress(),
     "balancekv3": BalanceKV3Press(),
     "pyramidkv": PyramidKVPress(),
+    "streamingllm": StreamingLLMPress(),
 }
 
 class DynamicCacheForGQA(DynamicCache):
@@ -127,6 +128,7 @@ def parse_args(args=None):
     parser.add_argument('--dataset', type=str, default='longbench-e')
     parser.add_argument('--datadir', type=str, default='qasper')
     parser.add_argument('--method', type=str, default="snapkv")
+    parser.add_argument('--task', type=str, default=None, choices=['cwe', 'niah_single_1', 'niah_multiquery', 'niah_multikey_2', 'vt', 'qa_2', 'niah_multivalue', 'qa_1', 'niah_single_3','niah_multikey_1', 'niah_multikey_3', 'niah_single_2', 'fwe'])
     parser.add_argument('--prefix', type=str, default='')
     parser.add_argument('--fraction', type=float, default=1.0)
     parser.add_argument('--debug', action='store_true')
@@ -153,6 +155,8 @@ def main():
 
     method_name = get_method_name(args)
     dataset_name = args.dataset + "-" + args.datadir
+    if args.dataset == 'ruler' and args.task is not None:
+        dataset_name = dataset_name.replace("ruler-", f"ruler-{args.task}-")
     logger, save_filename = set_logger(args, dataset_name, method_name)
     logger.info(f"save_filename: {save_filename}")
 
@@ -161,6 +165,8 @@ def main():
 
     subset_name = args.datadir + ("_e" if args.dataset == 'longbench-e' and args.datadir[:-2] != "_e" else "")
     df = load_dataset(DATASET_DICT[args.dataset], subset_name, split="test").to_pandas()
+    if args.dataset == 'ruler' and args.task is not None:
+        df = df[df["task"] == args.task]
     if args.fraction < 1.0:
         df = df.sample(frac=args.fraction, random_state=args.seed)
     df["predicted_answer"] = None
@@ -173,6 +179,8 @@ def main():
     model_kwargs = {"torch_dtype": "auto"}
     model_kwargs["attn_implementation"] = "flash_attention_2"
     pipe = pipeline("kv-press-text-generation", model=args.model, device_map="auto", model_kwargs=model_kwargs)
+    if not hasattr(pipe.model.config, "head_dim") and "qwen" in args.model.lower():
+        pipe.model.config.head_dim = pipe.model.config.hidden_size // pipe.model.config.num_attention_heads
 
     press = PRESS_DICT[args.method]
     if args.method == 'exact':
@@ -181,9 +189,12 @@ def main():
         press.compression_ratio = args.compression_ratio
         press.window_size = args.window_size
         press.kernel_size = args.kernel_size
+    elif args.method == 'streamingllm':
+        press.compression_ratio = args.compression_ratio
+        press.n_sink = args.window_size
     elif args.method in ['balancekv', 'balancekv3']:
         press.window_size = args.window_size
-        press.sink_size = args.window_size
+        press.sink_size = args.sink_size
         press.block_size = args.block_size
         press.itrs = args.itrs
         press.beta = args.beta
