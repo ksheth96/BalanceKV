@@ -8,7 +8,7 @@ import torch
 from datasets import load_dataset
 
 from kvpress.pipeline import KVPressTextGenerationPipeline
-from kvpress import BasePress, RandomPress, SnapKVPress, PyramidKVPress, StreamingLLMPress
+from kvpress import BasePress, RandomPress, SnapKVPress, PyramidKVPress, StreamingLLMPress, AdaKVPress
 from balancekv_press import BalanceKVPress, BalanceKV3Press
 from original_snapkv_press import OriginalSnapKVPress
 from utils import set_logger, get_method_name, reset_logger, dump_jsonl
@@ -24,9 +24,20 @@ from evaluation.longbench.calculate_metrics import dataset2metric
 from evaluation.longbench.calculate_metrics import calculate_metrics as longbench_scorer
 from evaluation.longbench.calculate_metrics import calculate_metrics_e as longbench_scorer_e
 from evaluation.longbenchv2.calculate_metrics import calculate_metrics as longbenchv2_scorer
+from evaluation.longbenchv2.calculate_metrics import extract_answer
 from evaluation.infinite_bench.calculate_metrics import calculate_metrics as infinite_bench_scorer
 from evaluation.loogle.calculate_metrics import calculate_metrics as loogle_scorer
 from evaluation.zero_scrolls.calculate_metrics import calculate_metrics as zero_scrolls_scorer
+
+
+def calculate_longbenchv2_metric(df):
+    predictions = df["predicted_answer"].tolist()
+    answers = df["answer"].tolist()
+    lengths = df["length"].tolist()
+    difficulties = df["difficulty"].tolist()
+    for pred, answer, length, difficulty in zip(predictions, answers, lengths, difficulties):
+        acc = int(extract_answer(pred) == answer)
+    return acc
 
 
 DATASET_DICT = {
@@ -58,6 +69,7 @@ PRESS_DICT = {
     "balancekv3": BalanceKV3Press(),
     "pyramidkv": PyramidKVPress(),
     "streamingllm": StreamingLLMPress(),
+    "adakv": AdaKVPress(SnapKVPress()),
 }
 
 class DynamicCacheForGQA(DynamicCache):
@@ -185,7 +197,7 @@ def main():
     press = PRESS_DICT[args.method]
     if args.method == 'exact':
         pass
-    elif args.method in ['snapkv', 'snapkv2', 'pyramidkv']:
+    elif args.method in ['snapkv', 'snapkv2', 'pyramidkv', 'adakv']:
         press.compression_ratio = args.compression_ratio
         press.window_size = args.window_size
         press.kernel_size = args.kernel_size
@@ -205,7 +217,7 @@ def main():
         import pdb; pdb.set_trace();
 
     tic0 = time.time()
-    max_context_length = None
+    max_context_length = 100_000 #None
     max_new_tokens = None
     metric_values = []
     preds = []
@@ -233,6 +245,8 @@ def main():
         df.loc[df_.index, "predicted_answer"] = output["answers"]
         # df.loc[df_.index, "compression_ratio"] = press.compression_ratio  # type:ignore[attr-defined]
 
+        if args.method == 'adakv':
+            import pdb; pdb.set_trace();
         input_len = pipe.context_length #cache.get_seq_length()
         cache_size = 0
         cache_shapes = []
@@ -259,6 +273,9 @@ def main():
         if args.dataset in ["longbench-e", "longbench"]:
             metric_value = scorer(df.loc[df_.index])
             metric_name = dataset2metric[args.datadir].__name__.replace("_score", "")
+        elif args.dataset == "longbench-v2":
+            metric_value = calculate_longbenchv2_metric(df.loc[df_.index])
+            metric_name = "acc"
         else:
             metric_ = scorer(df.loc[df_.index])
             metric_name = list(metric_[task_name].keys())[0]

@@ -54,6 +54,8 @@ def print_longbench(model_name="Llama-3.1-8B-Instruct", result_path="./results",
 
     mname_map = {}
     for mname in os.listdir(os.path.join(result_path, "longbench-e")):
+        if model_name not in mname:
+            continue
         mname_short = mname.split("_")[1]
         if mname_short in method_names:
             mname_map[mname_short] = mname
@@ -63,6 +65,8 @@ def print_longbench(model_name="Llama-3.1-8B-Instruct", result_path="./results",
 
         fnames = []
         base_path = os.path.join(result_path, "longbench-e", method_name_full)
+        if model_name not in base_path:
+            continue
         dataset_to_date = {}
         dataset_to_fn = {}
         for fn in os.listdir(base_path):
@@ -183,6 +187,7 @@ def main():
     # print_ruler(result_path="./results", method_names=method_names, datadir='4096')
     # print_ruler(result_path="./results", method_names=method_names, datadir='8192')
     # print_ruler(result_path="./results", method_names=method_names, datadir='16384')
+    print_longbench(result_path="./results", method_names=method_names)
     print_longbench(result_path="./results", model_name='Qwen2.5-7B-Instruct', method_names=method_names)
     
 
