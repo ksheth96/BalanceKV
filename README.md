@@ -28,5 +28,5 @@ python run_longbench.py --kv_type weightedbw --datasets qasper --e
 
 To run the NIAH evaluation, use the following command (default model is ``meta-llama/Llama-3.1-8B-Instruct'')
 ```sh
-python sample_data/HeadKV/run_needle_in_haystack.py --kv_type "weightedbw" --haystack_dir "<CurrentPath>/data/PaulGrahamEssays"
+python run_needle_in_haystack.py --kv_type "weightedbw" --haystack_dir "<CurrentPath>/data/PaulGrahamEssays"
 ```
