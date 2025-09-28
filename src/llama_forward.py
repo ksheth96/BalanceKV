@@ -7,7 +7,7 @@ from transformers.generation.utils import GenerateDecoderOnlyOutput
 from transformers.models.llama.modeling_llama import (apply_rotary_pos_emb,
                                                       repeat_kv)
 
-from .balanced_walk import balanced_walk, balanced_walk2,balanced_walk_needle_detection
+from .balanced_walk import uniform_sampling, balanced_walk,balanced_walk_needle_detection
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import List, Optional, Tuple, Union, Any, Dict
@@ -118,12 +118,12 @@ def manual_forward_llama(
 
                 if kv_type == 'weightedbw':
                     
-                    indices, weights = balanced_walk2(
+                    indices, weights = balanced_walk(
                         k_compressed, rng, gamma, temp, beta, itrs, block_size, value=v_compressed)
                     
                 elif kv_type == 'uniform':
-                    indices = balanced_walk(
-                        k_compressed, rng, 0.0, temp, beta, itrs, block_size, value=v_compressed)
+                    indices = uniform_sampling(
+                        k_compressed, rng, itrs, block_size)
 
                 if indices is not None:
                     k_bw = k_compressed.gather(
