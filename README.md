@@ -1,6 +1,6 @@
 # Streaming Attention Approximation via Discrepancy Theory
 
-This repository contains code for evaluating the proposed BalanceKV algorithm on the LongBench benchmark. 
+This repository contains code for evaluating our proposed BalanceKV algorithm in our NeurIPS 2025 spotlight paper https://arxiv.org/abs/2502.07861 on the LongBench and NIAH benchmarks. 
 
 ### Files and Directories
 
@@ -30,3 +30,6 @@ To run the NIAH evaluation, use the following command (default model is ``meta-l
 ```sh
 python run_needle_in_haystack.py --kv_type "weightedbw" --haystack_dir "<CurrentPath>/data/PaulGrahamEssays"
 ```
+
+### TODO
+To add the multimodal vlm evaluations, will be done in an upcoming commit.
